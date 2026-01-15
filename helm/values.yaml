@@ -1,0 +1,248 @@
+# ==============================================================================
+# HELM VALUES - SafeTwin X5 Agentique
+# ==============================================================================
+# Déploiement Kubernetes avec haute disponibilité
+# ==============================================================================
+
+# Général
+replicaCount: 3
+nameOverride: ""
+fullnameOverride: "safetwin-agentique"
+
+# Image
+image:
+  repository: preventera/safetwin-agentique
+  pullPolicy: IfNotPresent
+  tag: "1.0.0"
+
+imagePullSecrets: []
+
+# Service Account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "safetwin-sa"
+
+# Pod Security
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+# Service
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# Ingress
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+  hosts:
+    - host: agentique.safetwin.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: safetwin-tls
+      hosts:
+        - agentique.safetwin.local
+
+# Resources
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+# Autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Node Selection
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - safetwin-agentique
+          topologyKey: kubernetes.io/hostname
+
+# Probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Environment Variables
+env:
+  - name: LOG_LEVEL
+    value: "INFO"
+  - name: ENVIRONMENT
+    value: "production"
+  - name: LOA_TARGET
+    value: "4"
+
+# Secrets (from Kubernetes secrets)
+envFrom:
+  - secretRef:
+      name: safetwin-secrets
+
+# ConfigMap
+configMap:
+  enabled: true
+  data:
+    config.yaml: |
+      safetwin:
+        loa_target: 4
+        risk_threshold_warning: 70
+        risk_threshold_critical: 85
+        escalation_threshold: 85
+        latency_target_ms: 2000
+        audit_enabled: true
+        kill_switch_enabled: true
+      
+      agents:
+        perceptron:
+          enabled: true
+          interval_seconds: 60
+        planificateur:
+          enabled: true
+          max_plan_steps: 10
+        executeur:
+          enabled: true
+          max_autonomous_actions: 10
+        apprenant:
+          enabled: true
+          learning_rate: 0.01
+        superviseur:
+          enabled: true
+          
+      integrations:
+        neo4j:
+          enabled: true
+        redis:
+          enabled: true
+        kafka:
+          enabled: true
+
+# Volumes
+volumes:
+  - name: config
+    configMap:
+      name: safetwin-config
+  - name: tmp
+    emptyDir: {}
+
+volumeMounts:
+  - name: config
+    mountPath: /app/config
+    readOnly: true
+  - name: tmp
+    mountPath: /tmp
+
+# PodDisruptionBudget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# NetworkPolicy
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5432  # PostgreSQL
+        - protocol: TCP
+          port: 7687  # Neo4j
+        - protocol: TCP
+          port: 6379  # Redis
+        - protocol: TCP
+          port: 9092  # Kafka
+
+# ==============================================================================
+# Dépendances (sub-charts)
+# ==============================================================================
+
+redis:
+  enabled: true
+  architecture: replication
+  auth:
+    enabled: true
+    existingSecret: safetwin-redis-secret
+  replica:
+    replicaCount: 3
+
+postgresql:
+  enabled: false  # Utiliser PostgreSQL externe (2.85M records)
+
+neo4j:
+  enabled: false  # Utiliser Neo4j externe (Knowledge Graph)
+
+kafka:
+  enabled: true
+  replicaCount: 3
+  persistence:
+    enabled: true
+    size: 50Gi
+
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
